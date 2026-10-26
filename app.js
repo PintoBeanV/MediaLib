@@ -124,7 +124,7 @@
     $$('.filter-chip').forEach(button=>button.classList.toggle('active',button.dataset.kind===state.kind));
     if(title)$('#page-title').textContent=title;
     renderSidebar(); updateHeading(); applyFilter();
-    if(matchMedia('(max-width:560px)').matches)$('#sidebar').classList.remove('open');
+    if(matchMedia('(max-width:560px)').matches){$('.sidebar').classList.remove('open');$('#mobile-nav-toggle').setAttribute('aria-expanded','false');}
   }
   function setKind(kind){state.kind=kind;$$('.filter-chip').forEach(b=>b.classList.toggle('active',b.dataset.kind===kind));applyFilter();}
   function isInFilter(item){
@@ -422,9 +422,9 @@
     $('#import-library').addEventListener('click',()=>{$('#manage-dialog').close();$('#library-archive-input').click();});
     $('#library-archive-input').addEventListener('change',e=>{if(e.target.files[0])importFullLibrary(e.target.files[0]);e.target.value='';});
     $('#delete-library').addEventListener('click',deleteLibrary);
-    $('#mobile-nav-toggle').addEventListener('click',()=>$('#sidebar').classList.toggle('open'));
-    $('#gallery-wrap').addEventListener('click',e=>{if(e.target===e.currentTarget&&matchMedia('(max-width:560px)').matches)$('#sidebar').classList.remove('open');});
-    document.addEventListener('click',e=>{if(matchMedia('(max-width:560px)').matches&&$('#sidebar').classList.contains('open')&&!e.target.closest('.sidebar')&&!e.target.closest('#mobile-nav-toggle'))$('#sidebar').classList.remove('open');});
+    $('#mobile-nav-toggle').addEventListener('click',()=>{const sidebar=$('.sidebar'),open=!sidebar.classList.contains('open');sidebar.classList.toggle('open',open);$('#mobile-nav-toggle').setAttribute('aria-expanded',String(open));});
+    $('#gallery-wrap').addEventListener('click',e=>{if(e.target===e.currentTarget&&matchMedia('(max-width:560px)').matches){$('.sidebar').classList.remove('open');$('#mobile-nav-toggle').setAttribute('aria-expanded','false');}});
+    document.addEventListener('click',e=>{if(matchMedia('(max-width:560px)').matches&&$('.sidebar').classList.contains('open')&&!e.target.closest('.sidebar')&&!e.target.closest('#mobile-nav-toggle')){$('.sidebar').classList.remove('open');$('#mobile-nav-toggle').setAttribute('aria-expanded','false');}});
   }
   init();
 })();
