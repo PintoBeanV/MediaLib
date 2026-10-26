@@ -205,16 +205,16 @@
     const l=document.createElement('label');l.className='field-label';l.textContent=label;parent.append(l);
     const el=document.createElement(type==='textarea'?'textarea':'input');if(type!=='textarea')el.type=type;el.value=value;parent.append(el);return el;
   }
-  async function importFiles(files){
-    if(state.importBusy)return;const accepted=[...files].filter(f=>mediaKind(f));if(!accepted.length){showToast('No supported photos, videos, or audio files found.');return;}
-    const existing=new Map(state.all.map(x=>[normalizedPath(x.relativePath),x]));state.importBusy=true;const total=accepted.reduce((n,f)=>{const old=existing.get(normalizedPath(f.webkitRelativePath||f.name));return n+Math.max(0,f.size-(old?.size||0));},0);const estimate=await navigator.storage?.estimate?.().catch(()=>null);const room=estimate?.quota?estimate.quota-estimate.usage:Infinity;
+  async function importFiles(files,relativePathFor=file=>file.webkitRelativePath||file.name){
+    if(state.importBusy)return;const accepted=[...files].filter(mediaKind).map(file=>({file,relative:relativePathFor(file)}));if(!accepted.length){showToast('No supported photos, videos, or audio files found.');return;}
+    const existing=new Map(state.all.map(x=>[normalizedPath(x.relativePath),x]));state.importBusy=true;const total=accepted.reduce((n,{file,relative})=>{const old=existing.get(normalizedPath(relative));return n+Math.max(0,file.size-(old?.size||0));},0);const estimate=await navigator.storage?.estimate?.().catch(()=>null);const room=estimate?.quota?estimate.quota-estimate.usage:Infinity;
     if(total>room*.9){state.importBusy=false;showToast(`This selection is larger than the browser’s estimated free space (${prettyBytes(Math.max(0,room))}). Choose fewer or smaller files.` ,5000);return;}
     await navigator.storage?.persist?.().catch(()=>false);
     const toast=$('#toast');toast.textContent=`Adding ${accepted.length.toLocaleString()} files…`;toast.classList.add('show');
     let done=0,added=0,finalMessage='',finalTimeout=4000;
     try{
-      for(const file of accepted){
-        const relative=file.webkitRelativePath||file.name;const norm=normalizedPath(relative);const prior=existing.get(norm);const legacy=legacyMatch(relative,file.name);
+      for(const {file,relative} of accepted){
+        const norm=normalizedPath(relative);const prior=existing.get(norm);const legacy=legacyMatch(relative,file.name);
         const parts=relative.split(/[\\/]/).filter(Boolean);const afterRoot=parts.slice(1);let folder=afterRoot.slice(0,-1).join('/');let creator=defaultCreator(relative);
         if(legacy){if(legacy.folder)folder=legacy.folder;if(legacy.creator)creator=legacy.creator;}
         const item={id:prior?.id||crypto.randomUUID(),relativePath:relative,name:file.name,folder,kind:mediaKind(file),size:file.size,modified:file.lastModified||Date.now(),creator:prior?.creator||creator||'',tags:prior?.tags||legacy?.tags||[],notes:prior?.notes||legacy?.notes||'',collectionIds:prior?.collectionIds||legacy?.collectionIds||[],blob:file};
@@ -226,6 +226,19 @@
     }catch(error){await refreshData();finalMessage=error?.name==='QuotaExceededError'?'Browser storage is full. The files already added are still in your library.':'Import stopped. Files already added are still in your library.';finalTimeout=6000;}
     finally{state.importBusy=false;toast.classList.remove('show');}
     showToast(finalMessage,finalTimeout);
+  }
+  async function importFolder(){
+    if(typeof window.showDirectoryPicker!=='function'){$('#directory-input').click();return;}
+    try{
+      const root=await window.showDirectoryPicker({mode:'read'}),files=[],paths=new Map();
+      async function collect(directory,prefix=''){
+        for await(const entry of directory.values()){
+          if(entry.kind==='directory')await collect(entry,`${prefix}${entry.name}/`);
+          else if(entry.kind==='file'){const file=await entry.getFile();files.push(file);paths.set(file,`${root.name}/${prefix}${entry.name}`);}
+        }
+      }
+      await collect(root);await importFiles(files,file=>paths.get(file)||file.name);
+    }catch(error){if(error?.name!=='AbortError')showToast(`Could not open that folder: ${error.message||'folder access failed'}`,5000);}
   }
   async function saveCollection(name){
     name=name.trim();if(!name)return;
@@ -314,9 +327,8 @@
       await refreshData();startServiceWorker();
       if(!welcome&&state.all.length===0){$('#library-dialog').showModal();await request('settings','put',{key:'welcomeSeen',value:true});}
     }).catch(e=>{showToast(`MediaLib could not open local browser storage: ${e.message}`,8000);});
-    $('#import-button').addEventListener('click',()=>{const menu=$('#import-menu');menu.hidden=true;$('#import-options').setAttribute('aria-expanded','false');$('#files-input').click();});
-    $('#import-options').addEventListener('click',()=>{const menu=$('#import-menu');menu.hidden=!menu.hidden;$('#import-options').setAttribute('aria-expanded',String(!menu.hidden));});
-    $('#import-menu').addEventListener('click',e=>{const action=e.target.closest('[data-import]')?.dataset.import;if(!action)return;$('#import-menu').hidden=true;$('#import-options').setAttribute('aria-expanded','false');(action==='folder'?$('#directory-input'):$('#files-input')).click();});
+    $('#import-button').addEventListener('click',()=>$('#files-input').click());
+    $('#import-folder').addEventListener('click',importFolder);
     $('#directory-input').addEventListener('change',e=>{importFiles(e.target.files);e.target.value='';});
     $('#files-input').addEventListener('change',e=>{importFiles(e.target.files);e.target.value='';});
     $('#empty-import').addEventListener('click',()=>$('#files-input').click());
@@ -345,7 +357,6 @@
     $('#mobile-nav-toggle').addEventListener('click',()=>$('#sidebar').classList.toggle('open'));
     $('#gallery-wrap').addEventListener('click',e=>{if(e.target===e.currentTarget&&matchMedia('(max-width:560px)').matches)$('#sidebar').classList.remove('open');});
     document.addEventListener('click',e=>{if(matchMedia('(max-width:560px)').matches&&$('#sidebar').classList.contains('open')&&!e.target.closest('.sidebar')&&!e.target.closest('#mobile-nav-toggle'))$('#sidebar').classList.remove('open');});
-    document.addEventListener('click',e=>{if(!e.target.closest('.import-wrap')){$('#import-menu').hidden=true;$('#import-options').setAttribute('aria-expanded','false');}});
   }
   init();
 })();

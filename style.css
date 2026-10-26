@@ -11,3 +11,4 @@
 .import-wrap{display:flex;align-items:center;gap:3px}
 .import-options-button{height:34px;min-width:26px;padding:0 6px;border:1px solid #303639;border-radius:8px;background:var(--surface2);color:#e7e9e3;font-size:10px}
 .import-options-button:hover,.import-options-button[aria-expanded=true]{color:var(--lime);background:#2c3235}
+@media(max-width:560px){.topbar{display:grid;grid-template-columns:34px minmax(0,1fr);row-gap:10px;align-items:center}.top-actions{grid-column:1/-1;width:100%;justify-content:flex-start;flex-wrap:wrap;gap:6px;margin-top:2px}.top-actions .button{font-size:9px;padding:9px 9px}.top-actions .button span{display:inline}}
