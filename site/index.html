@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111315">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="MediaLib">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' blob: data:; media-src blob:; script-src 'self'; style-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="style.css">
+  <title>MediaLib</title>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#" aria-label="MediaLib home"><span class="brand-mark">◫</span><span>MediaLib</span></a>
+      <div class="sidebar-scroll" id="sidebar">
+        <section class="nav-section"><div class="section-heading">ARTISTS</div><div id="artists"></div></section>
+        <section class="nav-section">
+          <div class="section-heading">BROWSE TAGS</div>
+          <input id="tag-search" class="tag-search" placeholder="Find a tag…" aria-label="Find a tag">
+          <div id="tags"></div>
+          <button id="more-tags" class="more-tags" hidden>Show all tags</button>
+        </section>
+        <section class="nav-section">
+          <div class="section-heading section-heading-row"><span>VIRTUAL FOLDERS</span><button class="icon-button" id="new-folder-side" aria-label="Create virtual folder">＋</button></div>
+          <div id="virtual-folders"></div>
+          <div class="empty-side" id="empty-folders">Create a folder to collect favorites, projects, or anything you like.</div>
+        </section>
+        <section class="nav-section">
+          <div class="section-heading">LIBRARY</div>
+          <button class="nav-row selected" data-filter="all"><span class="nav-icon">▦</span><span>All images</span><span class="nav-count" id="all-count">0</span></button>
+          <button class="nav-row" data-filter="all-media"><span class="nav-icon">◧</span><span>All media</span><span class="nav-count" id="media-count">0</span></button>
+        </section>
+      </div>
+      <div class="sidebar-foot"><span class="privacy-dot"></span><span>Private on this device</span></div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <button class="mobile-nav-toggle" id="mobile-nav-toggle" aria-label="Show library navigation">☰</button><div class="title-block"><div class="eyebrow" id="crumb">YOUR LIBRARY</div><h1 id="page-title">Images</h1></div>
+        <div class="top-actions"><button class="button secondary" id="new-folder">＋ <span>Virtual folder</span></button><div class="import-wrap"><button class="button primary" id="import-button">＋ <span>Add media</span></button><div class="import-menu" id="import-menu" hidden><button data-import="folder">Choose / update a folder</button><button data-import="files">Choose photos or files</button></div></div></div>
+      </header>
+      <div class="search-row"><label class="search-wrap"><span class="search-icon">⌕</span><input id="search" type="search" placeholder="Search names, tags, notes, artists…" autocomplete="off"></label><div class="result-count" id="result-count"></div></div>
+      <div class="filter-row"><div class="kind-filters"><button class="filter-chip active" data-kind="image">Images</button><button class="filter-chip" data-kind="video">Videos</button><button class="filter-chip" data-kind="audio">Audio</button><button class="filter-chip" data-kind="all">Everything</button></div><div class="filter-tools"><label class="sort-label"><span>Sort</span><select id="sort-select"><option value="newest">Newest</option><option value="oldest">Oldest</option></select></label><div class="storage-note" id="storage-note"></div></div></div>
+      <div class="selection-bar" id="selection-bar" hidden><span id="selection-count">0 selected</span><select id="collection-select" aria-label="Choose virtual folder"><option value="">Choose virtual folder…</option></select><button class="button secondary small" id="add-to-collection">Add selected</button><button class="text-button" id="clear-selection">Clear</button></div>
+      <div class="gallery-wrap" id="gallery-wrap"><div class="gallery" id="gallery"></div><div class="empty-state" id="empty-state" hidden><div class="empty-art">▧</div><h2 id="empty-title">Your library starts here.</h2><p id="empty-text">Add a folder of photos or choose media from this device. Your files stay on this device.</p><button class="button primary" id="empty-import">＋ Add media</button></div><button class="load-more" id="load-more" hidden>Load more</button></div>
+      <footer class="bottom-note"><span class="privacy-dot"></span>Stored in this browser on this device · Nothing is uploaded <button class="text-button" id="export-catalog">Export catalog</button><button class="text-button" id="import-catalog">Import catalog</button><button class="text-button" id="library-tools">Library tools</button></footer>
+    </main>
+  </div>
+
+  <input id="directory-input" type="file" accept="image/*,video/*,audio/*" webkitdirectory directory multiple hidden>
+  <input id="files-input" type="file" accept="image/*,video/*,audio/*" multiple hidden>
+  <input id="legacy-input" type="file" accept="application/json,.json" hidden>
+  <input id="library-archive-input" type="file" accept=".medialib,.zip,application/zip" hidden>
+  <dialog id="detail-dialog" class="detail-dialog"><div id="detail-content"></div></dialog>
+  <dialog id="folder-dialog" class="small-dialog"><form method="dialog" id="folder-form"><div class="dialog-mark">＋</div><h2>New virtual folder</h2><p>Collect items here without moving your original files.</p><input id="folder-name" maxlength="60" placeholder="Give it a name" required><div class="dialog-actions"><button class="button secondary" value="cancel">Cancel</button><button class="button primary" id="create-folder" value="default">Create folder</button></div></form></dialog>
+  <dialog id="library-dialog" class="small-dialog"><form method="dialog"><div class="dialog-mark">▧</div><h2>Bring in your old catalog</h2><p>If you used the earlier MediaLib desktop version, import its private JSON export here. Then add the matching media folder and its notes, tags, and artist details will follow the files.</p><button class="button primary full" id="choose-legacy" value="default">Choose catalog export</button><button class="text-button full" value="cancel">Skip for now</button></form></dialog>
+  <dialog id="manage-dialog" class="small-dialog"><div class="dialog-mark">▤</div><h2>Manage this library</h2><p>A full library archive includes the media copies and private catalog. Keep that file private. You can update this library by choosing the same source folder again from <b>Add media</b>.</p><button class="button primary full" id="export-library">Export full library</button><button class="button secondary full" id="import-library">Import full library</button><button class="button danger full" id="delete-library">Delete this library</button><button class="text-button full" id="close-manage">Done</button></dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="archive.js" defer></script>
+  <script src="app.js" defer></script>
+</body>
+</html>
