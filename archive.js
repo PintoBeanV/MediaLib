@@ -48,6 +48,7 @@
       if(await crc32(entry.blob)!==entry.crc)throw new Error(`Media file failed its integrity check: ${item.name}`);
       if(i%12===0)onProgress(i+1,catalog.items.length);
     }
+    for(const avatar of catalog.artistAvatars||[]){if(!avatar.bundlePath)continue;const entry=entries.get(avatar.bundlePath);if(!entry)throw new Error(`Archive is missing the profile image for ${avatar.name||'an artist'}.`);if(await crc32(entry.blob)!==entry.crc)throw new Error(`Profile image failed its integrity check: ${avatar.name||'an artist'}.`);}
     return {catalog,entries};
   }
   const api=Object.freeze({crc32,createArchive,parseArchive});

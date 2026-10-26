@@ -8,7 +8,7 @@
   const AUDIO_EXT = new Set(['mp3','m4a','aac','wav','flac','ogg','opus']);
   const $ = (selector, root=document) => root.querySelector(selector);
   const $$ = (selector, root=document) => [...root.querySelectorAll(selector)];
-  const state = { db:null, all:[], collections:[], visible:[], filter:{type:'all'}, kind:'image', sort:'newest', query:'', selected:new Set(), expanded:new Set(), showAllTags:false, page:0, legacy:[], objectUrls:new Map(), toastTimer:0, importBusy:false, editingCollectionId:null };
+  const state = { db:null, all:[], collections:[], artistAvatars:{}, visible:[], filter:{type:'home'}, kind:'image', sort:'newest', query:'', selected:new Set(), expanded:new Set(), showAllTags:false, page:0, legacy:[], objectUrls:new Map(), avatarLookups:new Set(), avatarQueue:Promise.resolve(), avatarObserver:null, toastTimer:0, importBusy:false, editingCollectionId:null };
 
   function openDB() {
     return new Promise((resolve,reject) => {
@@ -71,28 +71,67 @@
     return first;
   }
   function formatDate(value){return value?new Date(value).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'Date unknown';}
+  function avatarKey(name){return String(name||'').trim().toLocaleLowerCase();}
+  function avatarSource(name){const record=state.artistAvatars[avatarKey(name)];if(!record)return'';if(record.blob){const key=`avatar:${avatarKey(name)}`;if(!state.objectUrls.has(key))state.objectUrls.set(key,URL.createObjectURL(record.blob));return state.objectUrls.get(key);}return record.url||'';}
+  function applyAvatarImage(image,name){const source=avatarSource(name),fallback=image.closest('.browse-folder-card')?.querySelector('[data-avatar-fallback]');if(!source){image.hidden=true;if(fallback)fallback.hidden=false;return;}image.onload=()=>{image.hidden=false;if(fallback)fallback.hidden=true;};image.onerror=()=>{image.hidden=true;if(fallback)fallback.hidden=false;};if(image.src!==source)image.src=source;}
+  function updateAvatarImages(name){const key=avatarKey(name);for(const image of $$('[data-artist-avatar]'))if(image.dataset.artistAvatar===key)applyAvatarImage(image,name);for(const fallback of $$('[data-avatar-fallback]'))if(fallback.dataset.avatarFallback===key&&!avatarSource(name))fallback.hidden=false;updateHeading();}
+  function updateHeading(){
+    const filter=state.filter,artist=filter.type==='artist'||filter.type==='artist-folder'?filter.artist||'Unassigned':'';const image=$('#heading-artist-avatar');
+    $('#crumb').textContent=artist?`YOUR LIBRARY: ${artist}`:'YOUR LIBRARY';
+    if(artist){image.dataset.artistAvatar=avatarKey(artist);image.onerror=()=>{image.hidden=true;};applyAvatarImage(image,artist);if(!avatarSource(artist))ensureArtistAvatar(artist);}
+    else{image.hidden=true;image.removeAttribute('src');delete image.dataset.artistAvatar;}
+  }
+  function ensureArtistAvatar(name){
+    const key=avatarKey(name);if(!key||key==='unassigned'||state.artistAvatars[key]?.blob||state.artistAvatars[key]?.url||state.avatarLookups.has(key))return;
+    state.avatarLookups.add(key);state.avatarQueue=state.avatarQueue.then(()=>new Promise(resolve=>setTimeout(resolve,500))).then(()=>lookupAryionAvatar(name)).catch(()=>{});
+  }
+  function observeArtistAvatar(card,name){if(avatarSource(name)||name==='Unassigned'){applyAvatarImage(card.querySelector('[data-artist-avatar]'),name);return;}if('IntersectionObserver'in window){if(!state.avatarObserver)state.avatarObserver=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){state.avatarObserver.unobserve(entry.target);ensureArtistAvatar(entry.target.dataset.artistName);}}, {root:$('#gallery-wrap'),rootMargin:'120px'});card.dataset.artistName=name;state.avatarObserver.observe(card);}else ensureArtistAvatar(name);}
+  async function lookupAryionAvatar(name){
+    const key=avatarKey(name);if(state.artistAvatars[key]?.blob)return;const profileUrl=`https://aryion.com/g4/user/${encodeURIComponent(name)}`;
+    try{
+      const response=await fetch(profileUrl,{credentials:'omit'});if(!response.ok)throw new Error(`HTTP ${response.status}`);
+      const doc=new DOMParser().parseFromString(await response.text(),'text/html');if(state.artistAvatars[key]?.blob)return;let best=null,bestScore=0;
+      for(const image of doc.images){const src=image.getAttribute('data-original')||image.getAttribute('data-src')||image.getAttribute('data-lazy-src')||image.getAttribute('src')||'';if(!src)continue;const marker=[image.alt,image.className,image.id,image.title,image.getAttribute('itemprop'),src].join(' ').toLocaleLowerCase();const score=marker.includes('avatar')&&marker.includes(key)?10:marker.includes('avatar')?8:marker.includes(key)&&/(profile|user|icon)/.test(marker)?6:/(avatar|profile-picture|profile_image|user-icon)/.test(marker)?5:0;if(score>bestScore){bestScore=score;best=src;}}
+      if(!best){const og=doc.querySelector('meta[property="og:image"]')?.content||'';if(['avatar','profile','user',key].some(token=>token&&og.toLocaleLowerCase().includes(token)))best=og;}
+      if(!best)return;const url=new URL(best,response.url||profileUrl);if(url.protocol!=='https:'||!(url.hostname==='aryion.com'||url.hostname.endsWith('.aryion.com')))return;
+      state.artistAvatars[key]={name,url:url.href,source:'aryion'};await request('settings','put',{key:'artistAvatars',value:state.artistAvatars});updateAvatarImages(name);
+    }catch(error){/* Aryion may disallow cross-origin profile reads; an imported AryGrabber avatar remains local-first. */}
+  }
+  function avatarBlob(file){if(file.size>5*1024*1024)return Promise.reject(new Error('Profile image is larger than 5 MB'));return file.slice(0,16).arrayBuffer().then(bytes=>{const b=new Uint8Array(bytes);let type='';if(b[0]===0xff&&b[1]===0xd8&&b[2]===0xff)type='image/jpeg';else if(b[0]===0x89&&b[1]===0x50&&b[2]===0x4e&&b[3]===0x47)type='image/png';else if(String.fromCharCode(...b.slice(0,4))==='GIF8')type='image/gif';else if(String.fromCharCode(...b.slice(0,4))==='RIFF'&&String.fromCharCode(...b.slice(8,12))==='WEBP')type='image/webp';else if(String.fromCharCode(...b.slice(4,12)).includes('ftypavif'))type='image/avif';if(!type)throw new Error('Not a supported image');return new Blob([file],{type});});}
+  async function importArtistAvatars(records){
+    let added=0;for(const {file,relative} of records){const parts=relative.split(/[\\/]/).filter(Boolean),artist=parts.at(-2)||'';if(!artist||artist.toLocaleLowerCase()==='aryion')continue;try{const blob=await avatarBlob(file),key=avatarKey(artist),oldUrl=state.objectUrls.get(`avatar:${key}`);if(oldUrl)URL.revokeObjectURL(oldUrl);state.objectUrls.delete(`avatar:${key}`);state.artistAvatars[key]={name:artist,blob,relativePath:relative,source:'arygrabber'};added++;}catch{}}
+    if(added){await request('settings','put',{key:'artistAvatars',value:state.artistAvatars});for(const record of records){const artist=record.relative.split(/[\\/]/).filter(Boolean).at(-2);if(artist)updateAvatarImages(artist);}}
+    return added;
+  }
+  function artistSubfolder(item,artist){
+    const folder=String(item.folder||'');if(!folder)return'';
+    const target=String(artist||'').trim().toLocaleLowerCase();
+    const parts=folder.split(/[\\/]/).filter(Boolean);const artistIndex=target?parts.findIndex(part=>part.toLocaleLowerCase()===target):-1;
+    return artistIndex>=0?parts.slice(artistIndex+1).join('/'):folder;
+  }
 
   async function refreshData(){
     [state.all,state.collections]=await Promise.all([request('media','getAll'),request('collections','getAll')]);
     state.all.sort((a,b)=>(b.modified||0)-(a.modified||0)||a.name.localeCompare(b.name));
-    renderSidebar(); updateStorage(); applyFilter();
+    renderSidebar(); updateHeading(); updateStorage(); applyFilter();
   }
   async function updateStorage(){
     if(!navigator.storage?.estimate){$('#storage-note').textContent='';return;}
     try{const {usage=0,quota=0}=await navigator.storage.estimate();$('#storage-note').textContent=`${prettyBytes(usage)} stored`+(quota?` · ${prettyBytes(quota)} available`:'');}catch{}
   }
   function setFilter(filter,title){
-    state.filter=filter; if(filter.type!=='all')state.kind='all';
+    state.filter=filter; if(filter.type==='home')state.kind='image';else if(filter.type!=='all')state.kind='all';
     $$('.filter-chip').forEach(button=>button.classList.toggle('active',button.dataset.kind===state.kind));
     if(title)$('#page-title').textContent=title;
-    renderSidebar(); applyFilter();
+    renderSidebar(); updateHeading(); applyFilter();
     if(matchMedia('(max-width:560px)').matches)$('#sidebar').classList.remove('open');
   }
   function setKind(kind){state.kind=kind;$$('.filter-chip').forEach(b=>b.classList.toggle('active',b.dataset.kind===kind));applyFilter();}
   function isInFilter(item){
     const f=state.filter;
-    if(f.type==='artist'&&item.creator!==f.artist)return false;
-    if(f.type==='artist-folder'&&(item.creator!==f.artist||item.folder!==f.folder))return false;
+    if(f.type==='home'&&!state.query)return false;
+    if(f.type==='artist'&&(item.creator||'')!==f.artist)return false;
+    if(f.type==='artist-folder'&&((item.creator||'')!==f.artist||artistSubfolder(item,f.artist)!==f.folder))return false;
     if(f.type==='tag'&&!item.tags.some(t=>t.toLocaleLowerCase()===f.tag.toLocaleLowerCase()))return false;
     if(f.type==='collection'&&!(item.collectionIds||[]).includes(f.id))return false;
     if(state.kind!=='all'&&item.kind!==state.kind)return false;
@@ -101,7 +140,8 @@
   }
   function applyFilter(){
     state.visible=state.all.filter(isInFilter);state.visible.sort((a,b)=>state.sort==='oldest'?(a.modified||0)-(b.modified||0):(b.modified||0)-(a.modified||0));state.page=0;state.selected.clear();$('#selection-bar').hidden=true;
-    $('#result-count').textContent=`${state.visible.length.toLocaleString()} ${state.visible.length===1?'item':'items'}`;
+    if(state.filter.type==='home'&&!state.query){const artistCount=new Set(state.all.map(x=>(x.creator||'').trim()||'Unassigned')).size;const tagCount=new Set(state.all.flatMap(x=>x.tags||[])).size;$('#result-count').textContent=`${artistCount.toLocaleString()} artists · ${tagCount.toLocaleString()} tags`;}
+    else $('#result-count').textContent=`${state.visible.length.toLocaleString()} ${state.visible.length===1?'item':'items'}`;
     const active=$('.filter-chip.active');if(active)active.classList.toggle('active',true);
     renderPage(true);
   }
@@ -116,27 +156,28 @@
     const artistRoot=$('#artists'),tagRoot=$('#tags'),virtualRoot=$('#virtual-folders');artistRoot.replaceChildren();tagRoot.replaceChildren();virtualRoot.replaceChildren();
     const imageCount=state.all.filter(x=>x.kind==='image').length;
     $('#all-count').textContent=imageCount.toLocaleString();$('#media-count').textContent=state.all.length.toLocaleString();
-    $$('[data-filter]').forEach(btn=>btn.classList.toggle('selected',state.filter.type==='all'&&(btn.dataset.filter==='all'&&state.kind==='image'||btn.dataset.filter==='all-media'&&state.kind==='all')));
+    $$('[data-filter]').forEach(btn=>btn.classList.toggle('selected',btn.dataset.filter==='home'&&state.filter.type==='home'||state.filter.type==='all'&&(btn.dataset.filter==='all'&&state.kind==='image'||btn.dataset.filter==='all-media'&&state.kind==='all')));
     const artists=new Map();
     for(const item of state.all){const who=(item.creator||'').trim()||'Unassigned';if(!artists.has(who))artists.set(who,[]);artists.get(who).push(item);}
     const sortedArtists=[...artists.entries()].sort((a,b)=>a[0]==='Unassigned'?1:b[0]==='Unassigned'?-1:a[0].localeCompare(b[0]));
     if(!sortedArtists.length){const e=document.createElement('div');e.className='artist-empty';e.textContent='Artists appear here when you add creator names to your media.';artistRoot.append(e);}
     for(const [artist,items] of sortedArtists){
       const row=document.createElement('div');row.className='artist-group';
-      const isActive=state.filter.type==='artist'&&state.filter.artist===artist;
-      const title=navButton(artist,'♙',items.length,isActive,()=>setFilter(artist==='Unassigned'?{type:'artist',artist:''}:{type:'artist',artist},artist));
+      const creatorKey=artist==='Unassigned'?'':artist;
+      const isActive=state.filter.type==='artist'&&state.filter.artist===creatorKey;
+      const title=navButton(artist,'♙',items.length,isActive,()=>{state.expanded.add(artist);setFilter({type:'artist',artist:creatorKey},artist);});
       title.querySelector('.nav-row span:nth-child(2)')?.classList.add('artist-name');row.append(title);
       const toggle=document.createElement('button');toggle.type='button';toggle.className='artist-expand';toggle.textContent=state.expanded.has(artist)?'▾':'›';toggle.setAttribute('aria-label',`${state.expanded.has(artist)?'Collapse':'Expand'} ${artist} folders`);
       toggle.addEventListener('click',()=>{state.expanded.has(artist)?state.expanded.delete(artist):state.expanded.add(artist);renderSidebar();});row.append(toggle);artistRoot.append(row);
       if(state.expanded.has(artist)){
-        const folderSet=new Set(items.map(x=>x.folder).filter(Boolean));const folderNames=[...folderSet].sort((a,b)=>a.localeCompare(b));
+        const folderSet=new Set(items.map(x=>artistSubfolder(x,creatorKey)));const folderNames=[...folderSet].sort((a,b)=>a===''?-1:b===''?1:a.localeCompare(b));
         const sub=document.createElement('div');sub.className='artist-folders';
-        if(!folderNames.length){const empty=document.createElement('div');empty.className='artist-empty';empty.textContent='No folders';sub.append(empty);}
-        for(const folder of folderNames){const label=folder.split(/[\\/]/).filter(Boolean).at(-1)||folder;const active=state.filter.type==='artist-folder'&&state.filter.artist===artist&&state.filter.folder===folder;sub.append(navButton(label,'↳',items.filter(x=>x.folder===folder).length,active,()=>setFilter({type:'artist-folder',artist:artist==='Unassigned'?'':artist,folder},label,'folder-row')));}
+        for(const folder of folderNames){const label=folder||'Unorganized files';const active=state.filter.type==='artist-folder'&&state.filter.artist===creatorKey&&state.filter.folder===folder;sub.append(navButton(label,'↳',items.filter(x=>artistSubfolder(x,creatorKey)===folder).length,active,()=>setFilter({type:'artist-folder',artist:creatorKey,folder},label,'folder-row')));}
         artistRoot.append(sub);
       }
     }
     const counts=new Map();for(const item of state.all)for(const tag of item.tags||[])counts.set(tag,(counts.get(tag)||0)+1);
+    $('#browse-count').textContent=(sortedArtists.length+counts.size).toLocaleString();
     const tagQuery=$('#tag-search').value.trim().toLocaleLowerCase();const sortedTags=[...counts.entries()].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]));
     const filtered=sortedTags.filter(([tag])=>tag.toLocaleLowerCase().includes(tagQuery));const show=tagQuery||state.showAllTags?filtered:filtered.slice(0,14);
     for(const [tag,count] of show)tagRoot.append(navButton(tag,'#',count,state.filter.type==='tag'&&state.filter.tag===tag,()=>setFilter({type:'tag',tag},tag),'tag-row'));
@@ -150,7 +191,7 @@
     $('#empty-folders').hidden=state.collections.length>0;
     const select=$('#collection-select');const old=select.value;select.replaceChildren(new Option('Choose virtual folder…',''));for(const c of state.collections)select.add(new Option(c.name,c.id));if(state.collections.some(c=>c.id===old))select.value=old;
   }
-  function revokeUrls(){for(const url of state.objectUrls.values())URL.revokeObjectURL(url);state.objectUrls.clear();}
+  function revokeUrls(includeAvatars=false){for(const [key,url] of state.objectUrls){if(includeAvatars||!key.startsWith('avatar:')){URL.revokeObjectURL(url);state.objectUrls.delete(key);}}}
   function mediaURL(item){if(!state.objectUrls.has(item.id))state.objectUrls.set(item.id,URL.createObjectURL(item.blob));return state.objectUrls.get(item.id);}
   function createPreview(item,detail=false){
     const holder=document.createElement('div');holder.className=detail?'detail-preview':'media-preview';
@@ -161,8 +202,29 @@
     }else{const icon=document.createElement('span');icon.className=detail?'detail-audio':'media-placeholder';icon.textContent='♫';holder.append(icon);}
     return holder;
   }
+  function renderBrowseHome(){
+    const gallery=$('#gallery');gallery.replaceChildren();revokeUrls();$('#load-more').hidden=true;
+    $('#empty-state').hidden=state.all.length>0;
+    if(!state.all.length){$('#empty-title').textContent='Your library starts here.';$('#empty-text').textContent='Import a folder or choose individual photos and files. Your files stay on this device.';return;}
+    const home=document.createElement('div');home.className='browse-home';
+    const artists=new Map();for(const item of state.all){const name=(item.creator||'').trim()||'Unassigned';artists.set(name,(artists.get(name)||0)+1);}
+    const tags=new Map();for(const item of state.all)for(const tag of item.tags||[])tags.set(tag,(tags.get(tag)||0)+1);
+    const sections=[
+      {title:'Artists',entries:[...artists].sort((a,b)=>a[0]==='Unassigned'?1:b[0]==='Unassigned'?-1:a[0].localeCompare(b[0])),icon:'♙',open:name=>{const creator=name==='Unassigned'?'':name;state.expanded.add(name);setFilter({type:'artist',artist:creator},name);}},
+      {title:'Tags · most used first',entries:[...tags].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0])),icon:'#',open:name=>setFilter({type:'tag',tag:name},name)}
+    ];
+    for(const section of sections){
+      const block=document.createElement('section');block.className='browse-home-section';const heading=document.createElement('h2');heading.textContent=section.title;block.append(heading);
+      if(!section.entries.length){const empty=document.createElement('p');empty.className='artist-empty';empty.textContent=section.title==='Artists'?'Add artist names in an item’s details to group them here.':'Add tags in an item’s details to browse by tag.';block.append(empty);}
+      const grid=document.createElement('div');grid.className='browse-folder-grid';
+      for(const [name,count] of section.entries){const card=document.createElement('button');card.type='button';card.className='browse-folder-card';card.addEventListener('click',()=>section.open(name));const icon=document.createElement('span');icon.className='browse-folder-icon';if(section.title==='Artists'){const key=avatarKey(name),image=document.createElement('img'),symbol=document.createElement('span');image.className='browse-folder-avatar';image.alt='';image.hidden=true;image.dataset.artistAvatar=key;symbol.className='browse-folder-symbol';symbol.textContent=section.icon;symbol.dataset.avatarFallback=key;icon.append(image,symbol);}else icon.textContent=section.icon;card.append(icon);const title=document.createElement('span');title.className='browse-folder-name';title.textContent=name;const total=document.createElement('span');total.className='browse-folder-count';total.textContent=`${count.toLocaleString()} ${count===1?'item':'items'}`;card.append(title,total);grid.append(card);if(section.title==='Artists')observeArtistAvatar(card,name);}
+      block.append(grid);home.append(block);
+    }
+    gallery.append(home);
+  }
   function renderPage(reset=false){
     if(reset){revokeUrls();$('#gallery').replaceChildren();}
+    if(state.filter.type==='home'&&!state.query){renderBrowseHome();return;}
     $('#empty-state').hidden=state.visible.length!==0;
     if(!state.visible.length){$('#load-more').hidden=true;$('#empty-title').textContent=state.all.length?'No matches in this view.':'Your library starts here.';$('#empty-text').textContent=state.all.length?'Try another tag, artist, or search.':'Choose a folder on your computer or photos and files on your phone. Originals stay where they are; MediaLib keeps a private copy on this device.';return;}
     const start=state.page*PAGE_SIZE,end=Math.min(start+PAGE_SIZE,state.visible.length);const frag=document.createDocumentFragment();
@@ -206,8 +268,10 @@
     const el=document.createElement(type==='textarea'?'textarea':'input');if(type!=='textarea')el.type=type;el.value=value;parent.append(el);return el;
   }
   async function importFiles(files,relativePathFor=file=>file.webkitRelativePath||file.name){
-    if(state.importBusy)return;const accepted=[...files].filter(mediaKind).map(file=>({file,relative:relativePathFor(file)}));if(!accepted.length){showToast('No supported photos, videos, or audio files found.');return;}
-    const existing=new Map(state.all.map(x=>[normalizedPath(x.relativePath),x]));state.importBusy=true;const total=accepted.reduce((n,{file,relative})=>{const old=existing.get(normalizedPath(relative));return n+Math.max(0,file.size-(old?.size||0));},0);const estimate=await navigator.storage?.estimate?.().catch(()=>null);const room=estimate?.quota?estimate.quota-estimate.usage:Infinity;
+    if(state.importBusy)return;const incoming=[...files].map(file=>({file,relative:relativePathFor(file)}));const avatarRecords=incoming.filter(({file})=>/^\.arygrabber-avatar\.img$|^arygrabber-avatar\.(?:jpe?g|png|webp|gif)$/i.test(file.name));const accepted=incoming.filter(x=>!avatarRecords.includes(x)&&mediaKind(x.file));if(!accepted.length&&!avatarRecords.length){showToast('No supported photos, videos, or audio files found.');return;}
+    state.importBusy=true;let avatarsAdded=0;try{avatarsAdded=avatarRecords.length?await importArtistAvatars(avatarRecords):0;}catch(error){state.importBusy=false;showToast(`Could not save artist profile images: ${error.message}`,5000);return;}
+    if(!accepted.length){state.importBusy=false;if(avatarsAdded){await refreshData();showToast(`Updated ${avatarsAdded} artist profile ${avatarsAdded===1?'image':'images'}.`);}else showToast('No usable AryGrabber profile images were found.');return;}
+    const existing=new Map(state.all.map(x=>[normalizedPath(x.relativePath),x]));const total=accepted.reduce((n,{file,relative})=>{const old=existing.get(normalizedPath(relative));return n+Math.max(0,file.size-(old?.size||0));},0);const estimate=await navigator.storage?.estimate?.().catch(()=>null);const room=estimate?.quota?estimate.quota-estimate.usage:Infinity;
     if(total>room*.9){state.importBusy=false;showToast(`This selection is larger than the browser’s estimated free space (${prettyBytes(Math.max(0,room))}). Choose fewer or smaller files.` ,5000);return;}
     await navigator.storage?.persist?.().catch(()=>false);
     const toast=$('#toast');toast.textContent=`Adding ${accepted.length.toLocaleString()} files…`;toast.classList.add('show');
@@ -222,7 +286,7 @@
         await request('media','put',item);existing.set(norm,item);done++;added++;
         if(done%8===0||done===accepted.length){toast.textContent=`Adding ${done.toLocaleString()} of ${accepted.length.toLocaleString()} files…`;}
       }
-      await refreshData();finalMessage=`Added ${added.toLocaleString()} files to this device.`;
+      await refreshData();finalMessage=`Added ${added.toLocaleString()} files${avatarsAdded?` and updated ${avatarsAdded} artist ${avatarsAdded===1?'profile image':'profile images'}`:''} on this device.`;
     }catch(error){await refreshData();finalMessage=error?.name==='QuotaExceededError'?'Browser storage is full. The files already added are still in your library.':'Import stopped. Files already added are still in your library.';finalTimeout=6000;}
     finally{state.importBusy=false;toast.classList.remove('show');}
     showToast(finalMessage,finalTimeout);
@@ -281,30 +345,34 @@
     const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='MediaLib-catalog.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);showToast('Catalog metadata exported. Media files are not included.');
   }
   async function exportFullLibrary(){
-    const media=state.all;if(!media.length){showToast('There are no media files in this library to export.');return;}
-    if(media.length+1>65535||media.some(item=>item.blob.size>=0xffffffff)){showToast('This library is too large for the current archive format.',5000);return;}
+    const media=state.all,avatarRecords=Object.entries(state.artistAvatars),localAvatars=avatarRecords.filter(([,record])=>record.blob);
+    if(!media.length&&!avatarRecords.length){showToast('There are no media files or artist avatars in this library to export.');return;}
+    if(media.length+localAvatars.length+1>65535||media.some(item=>item.blob.size>=0xffffffff)||localAvatars.some(([,record])=>record.blob.size>=0xffffffff)){showToast('This library is too large for the current archive format.',5000);return;}
     const toast=$('#toast');toast.textContent=`Preparing full-library archive · 0 of ${media.length} files`;toast.classList.add('show');
     const files=media.map((item,index)=>({item,name:`media/${String(index+1).padStart(6,'0')}-${encodeURIComponent(item.name)}`}));
-    const catalog={schema:'medialib-full-library-v1',exportedAt:new Date().toISOString(),collections:state.collections,items:files.map(({item,name})=>({id:item.id,path:item.relativePath,relativePath:item.relativePath,name:item.name,folder:item.folder,kind:item.kind,size:item.size,modified:item.modified,creator:item.creator,tags:item.tags||[],notes:item.notes||'',collectionIds:item.collectionIds||[],bundlePath:name}))};
-    const metadataBlob=new Blob([JSON.stringify(catalog)],{type:'application/json'});const entries=[{name:'MediaLib-library.json',blob:metadataBlob},...files.map(x=>({name:x.name,blob:x.item.blob}))];
+    const avatarFiles=localAvatars.map(([key,record],index)=>({key,record,name:`artists/${String(index+1).padStart(4,'0')}-${encodeURIComponent(record.name||key)}`}));
+    const catalog={schema:'medialib-full-library-v1',exportedAt:new Date().toISOString(),collections:state.collections,artistAvatars:avatarRecords.map(([key,record])=>({key,name:record.name||key,url:record.url||'',bundlePath:record.blob?avatarFiles.find(x=>x.key===key)?.name:''})),items:files.map(({item,name})=>({id:item.id,path:item.relativePath,relativePath:item.relativePath,name:item.name,folder:item.folder,kind:item.kind,size:item.size,modified:item.modified,creator:item.creator,tags:item.tags||[],notes:item.notes||'',collectionIds:item.collectionIds||[],bundlePath:name}))};
+    const metadataBlob=new Blob([JSON.stringify(catalog)],{type:'application/json'});const entries=[{name:'MediaLib-library.json',blob:metadataBlob},...files.map(x=>({name:x.name,blob:x.item.blob})),...avatarFiles.map(x=>({name:x.name,blob:x.record.blob}))];
     let finalMessage='',finalTimeout=6000;
     try{
       const archive=await MediaLibArchive.createArchive(entries,(done,total,bytes)=>{if(done%8===1||done===total)toast.textContent=`Preparing full-library archive · ${done.toLocaleString()} of ${total.toLocaleString()} files · ${prettyBytes(bytes)}`;});
-      const url=URL.createObjectURL(archive),a=document.createElement('a');a.href=url;a.download=`MediaLib-library-${new Date().toISOString().slice(0,10)}.zip`;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);finalMessage=`Exported ${media.length} media files and catalog. Keep the archive private.`;
+      const url=URL.createObjectURL(archive),a=document.createElement('a');a.href=url;a.download=`MediaLib-library-${new Date().toISOString().slice(0,10)}.zip`;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);finalMessage=`Exported ${media.length} media files, ${avatarRecords.length} artist avatars, and catalog. Keep the archive private.`;
     }catch(error){finalMessage=`Library export stopped: ${error.message}`;finalTimeout=7000;}
     finally{toast.classList.remove('show');}
     showToast(finalMessage,finalTimeout);
   }
   function clearStore(name){return new Promise((resolve,reject)=>{const tx=state.db.transaction(name,'readwrite');tx.objectStore(name).clear();tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||new Error('Library clear failed'));});}
-  async function clearLibraryData(){await Promise.all(['media','collections','settings'].map(clearStore));state.legacy=[];state.filter={type:'all'};state.kind='image';state.query='';$('#search').value='';$('#page-title').textContent='Images';}
+  async function clearLibraryData(){revokeUrls(true);await Promise.all(['media','collections','settings'].map(clearStore));state.legacy=[];state.artistAvatars={};state.avatarLookups.clear();state.filter={type:'home'};state.kind='image';state.query='';$('#search').value='';$('#page-title').textContent='Browse library';}
   async function importFullLibrary(file){
     const toast=$('#toast');toast.textContent='Reading library archive…';toast.classList.add('show');let finalMessage='',finalTimeout=6000;
     try{
-      const {catalog,entries}=await MediaLibArchive.parseArchive(file,(done,total)=>{$('#toast').textContent=`Checking library archive · ${done} of ${total} files`;});const total=catalog.items.reduce((n,x)=>n+(x.size||0),0);const estimate=await navigator.storage?.estimate?.().catch(()=>null);
+      const {catalog,entries}=await MediaLibArchive.parseArchive(file,(done,total)=>{$('#toast').textContent=`Checking library archive · ${done} of ${total} files`;});const total=catalog.items.reduce((n,x)=>n+(x.size||0),0)+(catalog.artistAvatars||[]).reduce((n,x)=>n+(x.bundlePath?entries.get(x.bundlePath)?.blob.size||0:0),0);const estimate=await navigator.storage?.estimate?.().catch(()=>null);
       if(estimate?.quota&&total>estimate.quota)throw new Error(`Archive is ${prettyBytes(total)}; browser storage estimate is ${prettyBytes(estimate.quota)}.`);
       if(!confirm(`Replace this device’s current MediaLib with ${catalog.items.length.toLocaleString()} items (${prettyBytes(total)}) from this archive? The current browser copy and virtual folders will be replaced; original files elsewhere are unchanged.`))return;
       await clearLibraryData();
       for(const collection of catalog.collections||[])await request('collections','put',collection);
+      for(const avatar of catalog.artistAvatars||[]){if(!avatar.key)continue;const blob=avatar.bundlePath?entries.get(avatar.bundlePath)?.blob:null;state.artistAvatars[avatar.key]={name:avatar.name||avatar.key,...(blob?{blob,source:'archive'}:avatar.url?{url:avatar.url,source:'aryion'}:{})};}
+      if(Object.keys(state.artistAvatars).length)await request('settings','put',{key:'artistAvatars',value:state.artistAvatars});
       for(let i=0;i<catalog.items.length;i++){
         const item=catalog.items[i],entry=entries.get(item.bundlePath),blob=entry.blob;
         await request('media','put',{id:item.id||crypto.randomUUID(),relativePath:item.relativePath||item.path||item.name,name:item.name,folder:item.folder||'',kind:item.kind||'image',size:item.size||blob.size,modified:item.modified||Date.now(),creator:item.creator||item.artist||'',tags:Array.isArray(item.tags)?item.tags:String(item.tags||'').split(',').map(x=>x.trim()).filter(Boolean),notes:item.notes||'',collectionIds:item.collectionIds||[],blob});
@@ -316,14 +384,14 @@
     showToast(finalMessage,finalTimeout);
   }
   async function deleteLibrary(){
-    if(!state.all.length&&!state.collections.length){showToast('This library is already empty.');return;}
-    if(!confirm(`Delete this MediaLib library from this device? This removes ${state.all.length.toLocaleString()} local media copies, tags, notes, and virtual folders. Original files outside MediaLib are not deleted.`))return;
+    if(!state.all.length&&!state.collections.length&&!Object.keys(state.artistAvatars).length){showToast('This library is already empty.');return;}
+    if(!confirm(`Delete this MediaLib library from this device? This removes ${state.all.length.toLocaleString()} local media copies, tags, notes, ${Object.keys(state.artistAvatars).length} artist profile images, and virtual folders. Original files outside MediaLib are not deleted.`))return;
     await clearLibraryData();await request('settings','put',{key:'welcomeSeen',value:true});await refreshData();$('#manage-dialog').close();showToast('This device now has a new, empty library.');
   }
   function startServiceWorker(){if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./service-worker.js').catch(()=>{});}
   function init(){
     openDB().then(async db=>{
-      state.db=db;const legacy=await request('settings','get','legacyCatalog');const welcome=await request('settings','get','welcomeSeen');state.legacy=legacy?.value||[];
+      state.db=db;const legacy=await request('settings','get','legacyCatalog');const avatars=await request('settings','get','artistAvatars');const welcome=await request('settings','get','welcomeSeen');state.legacy=legacy?.value||[];state.artistAvatars=avatars?.value||{};
       await refreshData();startServiceWorker();
       if(!welcome&&state.all.length===0){$('#library-dialog').showModal();await request('settings','put',{key:'welcomeSeen',value:true});}
     }).catch(e=>{showToast(`MediaLib could not open local browser storage: ${e.message}`,8000);});
@@ -335,7 +403,7 @@
     $('#new-folder').addEventListener('click',()=>openFolderDialog());
     $('#new-folder-side').addEventListener('click',()=>$('#new-folder').click());
     $('#folder-form').addEventListener('submit',async e=>{if(e.submitter?.id==='create-folder'||!e.submitter){e.preventDefault();const name=$('#folder-name').value;await saveCollection(name);if(name.trim())$('#folder-dialog').close();}});
-    $$('[data-filter]').forEach(btn=>btn.addEventListener('click',()=>{if(btn.dataset.filter==='all-media'){setKind('all');setFilter({type:'all'},'All media');}else{setKind('image');setFilter({type:'all'},'Images');}}));
+    $$('[data-filter]').forEach(btn=>btn.addEventListener('click',()=>{if(btn.dataset.filter==='home'){setFilter({type:'home'},'Browse library');}else if(btn.dataset.filter==='all-media'){setKind('all');setFilter({type:'all'},'All media');}else{setKind('image');setFilter({type:'all'},'Images');}}));
     $$('.filter-chip').forEach(btn=>btn.addEventListener('click',()=>setKind(btn.dataset.kind)));
     $('#sort-select').addEventListener('change',e=>{state.sort=e.target.value;applyFilter();});
     let searchTimer=0;$('#search').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{state.query=$('#search').value.trim();applyFilter();},160);});
