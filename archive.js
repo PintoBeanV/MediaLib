@@ -3,8 +3,10 @@
   const CRC_TABLE=(()=>{const table=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?(0xedb88320^(c>>>1)):(c>>>1);table[n]=c>>>0;}return table;})();
   async function crc32(blob){
     let crc=0xffffffff;
-    if(blob.stream){const reader=blob.stream().getReader();while(true){const {done,value}=await reader.read();if(done)break;for(const byte of value)crc=CRC_TABLE[(crc^byte)&255]^(crc>>>8);}}
-    else{for(let offset=0;offset<blob.size;offset+=1024*1024){const bytes=new Uint8Array(await blob.slice(offset,offset+1024*1024).arrayBuffer());for(const byte of bytes)crc=CRC_TABLE[(crc^byte)&255]^(crc>>>8);}}
+    // Indexed loops are several times faster than for...of over typed arrays.
+    const update=bytes=>{for(let i=0,n=bytes.length;i<n;i++)crc=CRC_TABLE[(crc^bytes[i])&255]^(crc>>>8);};
+    if(blob.stream){const reader=blob.stream().getReader();while(true){const {done,value}=await reader.read();if(done)break;update(value);}}
+    else{for(let offset=0;offset<blob.size;offset+=1024*1024)update(new Uint8Array(await blob.slice(offset,offset+1024*1024).arrayBuffer()));}
     return (crc^0xffffffff)>>>0;
   }
   function localHeader(name,crc,size){

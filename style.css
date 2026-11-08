@@ -28,3 +28,8 @@
 .browse-folder-avatar{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:50%}
 .browse-folder-symbol{position:relative;z-index:0}
 @media(max-width:560px){.heading-artist-avatar{width:31px;height:31px}.title-block{gap:7px}}
+.media-preview{position:relative}.media-preview.pending{background:linear-gradient(100deg,#1b1e20 30%,#23282b 50%,#1b1e20 70%) 0 0/300% 100%;animation:thumb-wait 1.4s linear infinite}.media-preview.pending img{visibility:hidden}@keyframes thumb-wait{to{background-position:-300% 0}}@media(prefers-reduced-motion:reduce){.media-preview.pending{animation:none}}
+.media-badge{position:absolute;right:6px;bottom:6px;display:grid;place-items:center;width:22px;height:22px;border-radius:50%;background:#111315cc;color:var(--lime);font-size:10px;pointer-events:none}
+.media-card{content-visibility:auto;contain-intrinsic-size:auto 220px}
+.detail-nav{position:absolute;top:50%;z-index:2;transform:translateY(-50%);width:38px;height:54px;border:0;border-radius:9px;background:#171a1d99;color:#fff;font-size:26px;line-height:1;touch-action:manipulation}.detail-nav:hover{background:#171a1ddd;color:var(--lime)}.detail-nav.prev{left:8px}.detail-nav.next{right:8px}
+@media(max-width:560px){.detail-nav{width:34px;height:46px;font-size:22px}}
