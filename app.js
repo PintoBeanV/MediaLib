@@ -9,7 +9,7 @@
   const AUDIO_EXT = new Set(['mp3','m4a','aac','wav','flac','ogg','opus']);
   const $ = (selector, root=document) => root.querySelector(selector);
   const $$ = (selector, root=document) => [...root.querySelectorAll(selector)];
-  const state = { db:null, all:[], collections:[], artistAvatars:{}, visible:[], filter:{type:'home'}, kind:'image', sort:'newest', query:'', selected:new Set(), expanded:new Set(), showAllTags:false, page:0, legacy:[], legacyByName:new Map(), byId:new Map(), thumbs:new Map(), thumbUrls:new Map(), thumbQueue:[], thumbQueued:new Set(), thumbFailed:new Set(), thumbWorkers:0, thumbObserver:null, detailIndex:-1, objectUrls:new Map(), avatarLookups:new Set(), avatarQueue:Promise.resolve(), avatarObserver:null, toastTimer:0, importBusy:false, editingCollectionId:null };
+  const state = { db:null, all:[], local:[], pc:{link:null,catalog:null,edits:{},status:'off',message:'',name:''}, collections:[], artistAvatars:{}, visible:[], filter:{type:'home'}, kind:'image', sort:'newest', query:'', selected:new Set(), expanded:new Set(), showAllTags:false, page:0, legacy:[], legacyByName:new Map(), byId:new Map(), thumbs:new Map(), thumbUrls:new Map(), thumbQueue:[], thumbQueued:new Set(), thumbFailed:new Set(), thumbWorkers:0, thumbObserver:null, detailIndex:-1, objectUrls:new Map(), avatarLookups:new Set(), avatarQueue:Promise.resolve(), avatarObserver:null, toastTimer:0, importBusy:false, editingCollectionId:null };
 
   function openDB() {
     return new Promise((resolve,reject) => {
@@ -119,7 +119,8 @@
   }
 
   async function refreshData(keepPosition=false){
-    [state.all,state.collections]=await Promise.all([request('media','getAll'),request('collections','getAll')]);
+    [state.local,state.collections]=await Promise.all([request('media','getAll'),request('collections','getAll')]);
+    state.all=[...state.local,...pcItems()];
     state.all.sort((a,b)=>(b.modified||0)-(a.modified||0)||a.name.localeCompare(b.name));
     state.byId=new Map(state.all.map(item=>[item.id,item]));
     renderSidebar(); updateHeading(); updateStorage(); applyFilter(keepPosition);
@@ -233,6 +234,7 @@
   }
   function queueThumb(item,urgent=false){
     if(!item||item.kind==='audio'||thumbFresh(item)||state.thumbFailed.has(item.id))return;
+    if(item.remote&&state.pc.status!=='ok')return;
     if(state.thumbQueued.has(item.id)){if(urgent){const i=state.thumbQueue.indexOf(item.id);if(i>0){state.thumbQueue.splice(i,1);state.thumbQueue.unshift(item.id);}}return;}
     state.thumbQueued.add(item.id);urgent?state.thumbQueue.unshift(item.id):state.thumbQueue.push(item.id);pumpThumbs();
   }
@@ -245,7 +247,7 @@
       const id=state.thumbQueue.shift(),item=state.byId.get(id);state.thumbQueued.delete(id);
       if(!item||thumbFresh(item))continue;
       try{
-        const blob=item.kind==='video'?await videoThumb(item.blob):await imageThumb(item.blob);
+        const blob=item.remote?await pcThumb(item):item.kind==='video'?await videoThumb(item.blob):await imageThumb(item.blob);
         const record={id,blob,size:item.size,modified:item.modified};await request('thumbs','put',record);
         dropThumbUrl(id);state.thumbs.set(id,record);
         const url=thumbURL(item);for(const img of $$(`img[data-thumb-for="${CSS.escape(id)}"]`)){img.src=url;img.closest('.media-preview')?.classList.remove('pending');}
@@ -255,6 +257,7 @@
   }
   function useOriginalPreview(holder,item){
     holder.classList.remove('pending');holder.replaceChildren();
+    if(item.remote){const icon=document.createElement('span');icon.className='media-placeholder';icon.textContent=item.kind==='video'?'▶':'▧';icon.title='Preview needs your PC';holder.append(icon);return;}
     if(item.kind==='image'){const img=document.createElement('img');img.src=mediaURL(item);img.alt=item.name;img.loading='lazy';img.decoding='async';holder.append(img);}
     else if(item.kind==='video'){const video=document.createElement('video');video.src=mediaURL(item);video.preload='metadata';video.muted=true;video.playsInline=true;holder.append(video);}
     else{const icon=document.createElement('span');icon.className='media-placeholder';icon.textContent='♫';holder.append(icon);}
@@ -276,11 +279,12 @@
       if(item.kind==='audio'){const icon=document.createElement('span');icon.className='media-placeholder';icon.textContent='♫';holder.append(icon);return holder;}
       if(state.thumbFailed.has(item.id)){useOriginalPreview(holder,item);return holder;}
       const img=document.createElement('img');img.alt=item.name;img.decoding='async';img.dataset.thumbFor=item.id;
-      const url=thumbURL(item);if(url){img.src=url;}else{holder.classList.add('pending');observeThumb(holder,item);}
+      const url=thumbURL(item);if(url){img.src=url;}else if(item.remote&&state.pc.status!=='ok'){useOriginalPreview(holder,item);return holder;}else{holder.classList.add('pending');observeThumb(holder,item);}
       holder.append(img);if(item.kind==='video'){const badge=document.createElement('span');badge.className='media-badge';badge.textContent='▶';holder.append(badge);}
       return holder;
     }
     const holder=document.createElement('div');holder.className=detail?'detail-preview':'media-preview';
+    if(item.remote)return remoteDetailPreview(holder,item);
     if(item.kind==='image'){
       const img=document.createElement('img');img.src=mediaURL(item);img.alt=item.name;img.loading=detail?'eager':'lazy';holder.append(img);
     }else if(item.kind==='video'){
@@ -288,6 +292,127 @@
     }else{const icon=document.createElement('span');icon.className=detail?'detail-audio':'media-placeholder';icon.textContent='♫';holder.append(icon);}
     return holder;
   }
+  function remoteDetailPreview(holder,item){
+    const thumb=thumbURL(item);if(thumb&&item.kind!=='audio'){const img=document.createElement('img');img.src=thumb;img.alt=item.name;img.className='remote-placeholder';holder.append(img);}
+    const note=document.createElement('span');note.className='detail-loading remote-placeholder';note.textContent=`Loading from your PC… (${prettyBytes(item.size)})`;holder.append(note);
+    pcFileURL(item).then(url=>{
+      if(state.detailItemId!==item.id)return;let media;
+      if(item.kind==='video'){media=document.createElement('video');media.controls=true;media.playsInline=true;media.preload='metadata';}
+      else if(item.kind==='audio'){media=document.createElement('audio');media.controls=true;}
+      else{media=document.createElement('img');media.alt=item.name;}
+      media.src=url;$$('.remote-placeholder',holder).forEach(x=>x.remove());holder.prepend(media);
+      const save=$('#detail-content .open-original');if(save){save.href=url;save.removeAttribute('aria-disabled');}
+    }).catch(error=>{if(state.detailItemId===item.id){note.textContent=error.message;note.classList.add('error');}});
+    return holder;
+  }
+  // ---- Your PC (AryGrabber phone access over Tailscale) --------------------
+  // Items listed by the PC are never copied into this browser. The list is
+  // cached so the library can be browsed offline; previews are kept in the
+  // thumbs store; full files are fetched on demand with the access key.
+  function pcAllowedUrl(value){
+    try{const url=new URL(String(value||'').trim());if(url.protocol==='https:'&&!url.username&&!url.password)return url.origin;if(url.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(url.hostname))return url.origin;}catch{}
+    return'';
+  }
+  async function pcFetch(path,timeout=10000){
+    const link=state.pc.link;if(!link)throw new Error('Not connected to your PC');
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeout);
+    try{
+      const response=await fetch(link.url+path,{headers:{Authorization:`Bearer ${link.key}`},credentials:'omit',cache:'no-store',signal:controller.signal});
+      if(response.status===401)throw Object.assign(new Error('Your PC rejected the access key. Pair again from AryGrabber → Phone access.'),{auth:true});
+      if(!response.ok)throw new Error(`Your PC answered HTTP ${response.status}`);
+      return response;
+    }catch(error){if(error.name==='AbortError')throw new Error('Your PC did not answer (it may be asleep, off, or Tailscale is disconnected).');if(error instanceof TypeError)throw new Error('Can’t reach your PC. Check that it’s awake, AryGrabber is sharing, and Tailscale is on here.');throw error;}
+    finally{clearTimeout(timer);}
+  }
+  function pcItems(){
+    const local=new Set(state.local.map(x=>normalizedPath(x.relativePath)));const out=[];
+    for(const entry of state.pc.catalog?.items||[]){
+      if(!entry?.id||local.has(normalizedPath(entry.relativePath)))continue;const edit=state.pc.edits[entry.id]||{};
+      out.push({id:entry.id,relativePath:entry.relativePath,name:entry.name||String(entry.relativePath||'').split('/').pop(),folder:entry.folder||'',kind:entry.kind||'image',size:entry.size||0,modified:entry.modified||0,creator:edit.creator??entry.creator??'',tags:edit.tags??(Array.isArray(entry.tags)?entry.tags:[]),notes:edit.notes??entry.notes??'',collectionIds:edit.collectionIds||[],remote:true,blob:null});
+    }
+    return out;
+  }
+  function pcSetStatus(status,message=''){state.pc.status=status;state.pc.message=message;renderPcStatus();}
+  function renderPcStatus(){
+    const pc=state.pc,el=$('#pc-status');if(!el)return;const count=(pc.catalog?.items||[]).length;
+    const when=pc.catalog?.fetchedAt?new Date(pc.catalog.fetchedAt).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
+    el.textContent=!pc.link?'Not connected. In AryGrabber, open Phone access and scan the pairing code, or enter the address and key here.':pc.status==='ok'?`Connected to ${pc.name||'your PC'} · ${count.toLocaleString()} items.`:pc.status==='checking'?'Checking your PC…':`${pc.message||'Your PC is offline.'}${count?` Showing the list saved ${when}; previews you’ve seen still work, but opening files needs the PC.`:''}`;
+    el.dataset.state=pc.link?pc.status:'off';
+    $('#pc-connect').textContent=pc.link?'Change PC address or key':'Connect to my PC';$('#pc-refresh').hidden=!pc.link;$('#pc-disconnect').hidden=!pc.link;
+    const foot=$('#privacy-label');if(foot)foot.textContent=pc.link?(pc.status==='ok'?'Private · linked to your PC':'Private · PC offline'):'Private on this device';
+  }
+  async function pcRefresh(quiet=false){
+    if(!state.pc.link||state.pc.refreshing)return;state.pc.refreshing=true;pcSetStatus('checking');
+    try{
+      const catalog=await (await pcFetch('/api/catalog',20000)).json();if(!Array.isArray(catalog.items))throw new Error('Your PC sent an unexpected reply.');
+      state.pc.catalog={items:catalog.items,avatars:catalog.avatars||[],fetchedAt:Date.now()};state.pc.name=catalog.name||'';state.pc.checked=Date.now();for(const entry of catalog.items)state.thumbFailed.delete(entry.id);
+      await request('settings','put',{key:'pcCatalog',value:state.pc.catalog});pcSetStatus('ok');await refreshData(true);pcLoadAvatars();
+      if(!quiet)showToast(`Your PC is connected · ${catalog.items.length.toLocaleString()} items.`);
+    }catch(error){state.pc.checked=Date.now();pcSetStatus(error.auth?'auth':'offline',error.message);if(!quiet||error.auth)showToast(error.message,6000);}
+    finally{state.pc.refreshing=false;}
+  }
+  async function pcLoadAvatars(){
+    let changed=false;
+    for(const name of state.pc.catalog?.avatars||[]){
+      const key=avatarKey(name);if(state.artistAvatars[key]?.blob)continue;
+      try{const blob=await (await pcFetch(`/api/avatar/${encodeURIComponent(name)}`)).blob();if(!blob.type.startsWith('image/'))continue;state.artistAvatars[key]={name,blob,source:'pc'};changed=true;updateAvatarImages(name);}catch{}
+    }
+    if(changed)await request('settings','put',{key:'artistAvatars',value:state.artistAvatars});
+  }
+  async function pcThumb(item){return (await pcFetch(`/api/thumb/${encodeURIComponent(item.id)}`,30000)).blob();}
+  async function pcFileURL(item){
+    if(state.objectUrls.has(item.id))return state.objectUrls.get(item.id);
+    const blob=await (await pcFetch(`/api/file/${encodeURIComponent(item.id)}`,180000)).blob();
+    const url=URL.createObjectURL(blob);state.objectUrls.set(item.id,url);return url;
+  }
+  async function pcSaveLink(url,key,{silent=false}={}){
+    const origin=pcAllowedUrl(url);key=String(key||'').trim();
+    if(!origin){showToast('Use the https:// address shown in AryGrabber (it ends in .ts.net).',6000);return false;}
+    if(key.length<16){showToast('That access key looks too short. Copy it from AryGrabber → Phone access.',6000);return false;}
+    const changed=state.pc.link?.url!==origin;state.pc.link={url:origin,key};
+    if(changed){state.pc.catalog=null;state.pc.edits={};await request('settings','put',{key:'pcCatalog',value:null});await request('settings','put',{key:'pcEdits',value:{}});}
+    await request('settings','put',{key:'pcLink',value:state.pc.link});renderPcStatus();await pcRefresh(silent);return true;
+  }
+  async function pcDisconnect(){
+    if(!confirm('Disconnect from your PC? Its items and saved previews will be removed from this browser. Nothing on your PC changes.'))return;
+    const ids=new Set((state.pc.catalog?.items||[]).map(x=>x.id));
+    state.pc={link:null,catalog:null,edits:{},status:'off',message:'',name:''};
+    for(const key of ['pcLink','pcCatalog','pcEdits'])await request('settings','delete',key);
+    for(const id of ids){dropThumbUrl(id);state.thumbs.delete(id);state.thumbFailed.delete(id);try{await request('thumbs','delete',id);}catch{}}
+    for(const [key,record] of Object.entries(state.artistAvatars))if(record.source==='pc')delete state.artistAvatars[key];
+    await request('settings','put',{key:'artistAvatars',value:state.artistAvatars});renderPcStatus();await refreshData();showToast('Disconnected from your PC.');
+  }
+  async function pcSaveEdit(item){
+    state.pc.edits[item.id]={creator:item.creator,tags:item.tags,notes:item.notes,collectionIds:item.collectionIds||[]};
+    await request('settings','put',{key:'pcEdits',value:state.pc.edits});
+  }
+  function pcReadPairing(){
+    // AryGrabber's QR code opens  …/#pair=<base64url JSON {url,key}>.
+    const match=/^#pair=([A-Za-z0-9_-]+)$/.exec(location.hash);if(!match)return null;
+    history.replaceState(null,'',location.pathname+location.search);
+    try{const json=JSON.parse(atob(match[1].replaceAll('-','+').replaceAll('_','/')));return json&&typeof json==='object'?json:null;}catch{return null;}
+  }
+  function openPcDialog(){
+    $('#pc-url').value=state.pc.link?.url||'';$('#pc-key').value='';$('#pc-key').placeholder=state.pc.link?'Leave empty to keep the current key':'Paste the access key';
+    $('#manage-dialog').close();$('#pc-dialog').showModal();
+  }
+  async function pcLoadSaved(){
+    // Before the first render, so the saved PC list shows even when the PC is asleep.
+    const [link,catalog,edits]=await Promise.all(['pcLink','pcCatalog','pcEdits'].map(key=>request('settings','get',key)));
+    state.pc.link=link?.value||null;state.pc.catalog=catalog?.value||null;state.pc.edits=edits?.value||{};
+    if(state.pc.link)state.pc.status='checking';
+  }
+  async function pcInit(){
+    const pairing=pcReadPairing();
+    if(pairing){
+      const origin=pcAllowedUrl(pairing.url);
+      if(origin&&pairing.key&&confirm(`Connect MediaLib to your PC at ${origin}? Only use a code from your own AryGrabber.`))await pcSaveLink(origin,pairing.key);
+      else if(!origin)showToast('That pairing link isn’t valid.',5000);
+    }else if(state.pc.link)pcRefresh(true);
+    renderPcStatus();
+    document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.pc.link&&Date.now()-(state.pc.checked||0)>60000)pcRefresh(true);});
+  }
+
   function renderBrowseHome(){
     const gallery=$('#gallery');gallery.replaceChildren();revokeUrls();$('#load-more').hidden=true;
     $('#empty-state').hidden=state.all.length>0;
@@ -343,7 +468,7 @@
     inner.append(preview);
     const form=document.createElement('form');form.className='detail-form';form.addEventListener('submit',e=>e.preventDefault());
     const title=document.createElement('h2');title.textContent=item.name;form.append(title);
-    const path=document.createElement('p');path.className='detail-path';path.textContent=[item.creator,item.folder,prettyBytes(item.size),formatDate(item.modified)].filter(Boolean).join('  ·  ');form.append(path);
+    const path=document.createElement('p');path.className='detail-path';path.textContent=[item.creator,item.folder,prettyBytes(item.size),formatDate(item.modified),item.remote?'On your PC':''].filter(Boolean).join('  ·  ');form.append(path);
     const creator=makeField(form,'Artist / creator','text',item.creator||'');
     const tags=makeField(form,'Tags · separate with commas','text',(item.tags||[]).join(', '));
     const notes=makeField(form,'Notes','textarea',item.notes||'');
@@ -351,10 +476,10 @@
     const chipArea=document.createElement('div');chipArea.className='detail-collections';const memberships=new Set(item.collectionIds||[]);
     for(const collection of state.collections){const chip=document.createElement('button');chip.type='button';chip.className=`collection-toggle ${memberships.has(collection.id)?'active':''}`;chip.textContent=collection.name;chip.addEventListener('click',()=>{memberships.has(collection.id)?memberships.delete(collection.id):memberships.add(collection.id);chip.classList.toggle('active',memberships.has(collection.id));});chipArea.append(chip);}
     if(!state.collections.length){const no=document.createElement('span');no.className='artist-empty';no.textContent='Create a virtual folder to collect this item.';chipArea.append(no);}form.append(chipArea);
-    const actions=document.createElement('div');actions.className='detail-actions';const open=document.createElement('a');open.className='open-original';open.href=mediaURL(item);open.download=item.name;open.textContent='Save a copy';actions.append(open);
+    const actions=document.createElement('div');actions.className='detail-actions';const open=document.createElement('a');open.className='open-original';if(item.remote){open.href=state.objectUrls.get(item.id)||'#';if(!state.objectUrls.has(item.id))open.setAttribute('aria-disabled','true');open.addEventListener('click',e=>{if(open.getAttribute('aria-disabled')){e.preventDefault();showToast('Still loading from your PC…');}});}else open.href=mediaURL(item);open.download=item.name;open.textContent='Save a copy';actions.append(open);
     const save=document.createElement('button');save.type='button';save.className='button primary';save.textContent='Save details';save.addEventListener('click',async()=>{
       item.creator=creator.value.trim();item.tags=[...new Set(tags.value.split(',').map(x=>x.trim()).filter(Boolean))];item.notes=notes.value.trim();item.collectionIds=[...memberships];
-      try{await request('media','put',item);dialog.close();await refreshData(true);showToast('Details saved on this device.');}catch(e){showToast(`Could not save: ${e.message}`);}
+      try{if(item.remote)await pcSaveEdit(item);else await request('media','put',item);dialog.close();await refreshData(true);showToast('Details saved on this device.');}catch(e){showToast(`Could not save: ${e.message}`);}
     });actions.append(save);form.append(actions);inner.append(form);root.append(inner);if(!dialog.open)dialog.showModal();
     dialog.onclose=()=>{$('#detail-content').replaceChildren();releaseDetailMedia();state.detailIndex=-1;};
   }
@@ -366,7 +491,7 @@
     if(state.importBusy)return;const incoming=[...files].map(file=>({file,relative:relativePathFor(file)}));const avatarRecords=incoming.filter(({file})=>/^\.arygrabber-avatar\.img$|^arygrabber-avatar\.(?:jpe?g|png|webp|gif)$/i.test(file.name));const accepted=incoming.filter(x=>!avatarRecords.includes(x)&&mediaKind(x.file));if(!accepted.length&&!avatarRecords.length){showToast('No supported photos, videos, or audio files found.');return;}
     state.importBusy=true;let avatarsAdded=0;try{avatarsAdded=avatarRecords.length?await importArtistAvatars(avatarRecords):0;}catch(error){state.importBusy=false;showToast(`Could not save artist profile images: ${error.message}`,5000);return;}
     if(!accepted.length){state.importBusy=false;if(avatarsAdded){await refreshData();showToast(`Updated ${avatarsAdded} artist profile ${avatarsAdded===1?'image':'images'}.`);}else showToast('No usable AryGrabber profile images were found.');return;}
-    const existing=new Map(state.all.map(x=>[normalizedPath(x.relativePath),x]));const total=accepted.reduce((n,{file,relative})=>{const old=existing.get(normalizedPath(relative));return n+Math.max(0,file.size-(old?.size||0));},0);const estimate=await navigator.storage?.estimate?.().catch(()=>null);const room=estimate?.quota?estimate.quota-estimate.usage:Infinity;
+    const existing=new Map(state.local.map(x=>[normalizedPath(x.relativePath),x]));const total=accepted.reduce((n,{file,relative})=>{const old=existing.get(normalizedPath(relative));return n+Math.max(0,file.size-(old?.size||0));},0);const estimate=await navigator.storage?.estimate?.().catch(()=>null);const room=estimate?.quota?estimate.quota-estimate.usage:Infinity;
     if(total>room*.9){state.importBusy=false;showToast(`This selection is larger than the browser’s estimated free space (${prettyBytes(Math.max(0,room))}). Choose fewer or smaller files.` ,5000);return;}
     await navigator.storage?.persist?.().catch(()=>false);
     const toast=$('#toast');toast.textContent=`Adding ${accepted.length.toLocaleString()} files…`;toast.classList.add('show');
@@ -415,14 +540,14 @@
   }
   async function addSelectionToCollection(){
     const id=$('#collection-select').value;if(!id){showToast('Choose a virtual folder first.');return;}
-    const updates=[];for(const itemId of state.selected){const item=await request('media','get',itemId);if(!item)continue;item.collectionIds=[...new Set([...(item.collectionIds||[]),id])];updates.push(item);}
-    await writeMany('media',updates);state.selected.clear();updateSelection();await refreshData(true);showToast(`Added ${updates.length} items to the virtual folder.`);
+    const updates=[];let remoteCount=0;for(const itemId of state.selected){const listed=state.byId.get(itemId);if(listed?.remote){listed.collectionIds=[...new Set([...(listed.collectionIds||[]),id])];await pcSaveEdit(listed);remoteCount++;continue;}const item=await request('media','get',itemId);if(!item)continue;item.collectionIds=[...new Set([...(item.collectionIds||[]),id])];updates.push(item);}
+    await writeMany('media',updates);state.selected.clear();updateSelection();await refreshData(true);showToast(`Added ${updates.length+remoteCount} items to the virtual folder.`);
   }
   async function importLegacy(file){
     try{
       const json=JSON.parse(await file.text());if(!json||!Array.isArray(json.items))throw new Error('That file is not a MediaLib catalog export.');
       if(Array.isArray(json.collections))for(const collection of json.collections){if(collection.id&&collection.name)await request('collections','put',collection);}
-      state.legacy=json.items;indexLegacy();await request('settings','put',{key:'legacyCatalog',value:state.legacy});let count=0;const current=state.all;const changedItems=[];
+      state.legacy=json.items;indexLegacy();await request('settings','put',{key:'legacyCatalog',value:state.legacy});let count=0;const current=state.local;const changedItems=[];
       for(const item of current){const match=legacyMatch(item.relativePath,item.name);if(!match)continue;let changed=false;
         const creator=String(match.creator||match.artist||'').trim();if(creator&&item.creator!==creator){item.creator=creator;changed=true;}
         const newTags=Array.isArray(match.tags)?match.tags:String(match.tags||'').split(',').map(t=>t.trim()).filter(Boolean);if(!item.tags?.length&&newTags.length){item.tags=newTags;changed=true;}
@@ -443,7 +568,7 @@
     const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='MediaLib-catalog.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);showToast('Catalog metadata exported. Media files are not included.');
   }
   async function exportFullLibrary(){
-    const media=state.all,avatarRecords=Object.entries(state.artistAvatars),localAvatars=avatarRecords.filter(([,record])=>record.blob);
+    const media=state.local,avatarRecords=Object.entries(state.artistAvatars),localAvatars=avatarRecords.filter(([,record])=>record.blob);
     if(!media.length&&!avatarRecords.length){showToast('There are no media files or artist avatars in this library to export.');return;}
     if(media.length+localAvatars.length+1>65535||media.some(item=>item.blob.size>=0xffffffff)||localAvatars.some(([,record])=>record.blob.size>=0xffffffff)){showToast('This library is too large for the current archive format.',5000);return;}
     const toast=$('#toast');toast.textContent=`Preparing full-library archive · 0 of ${media.length} files`;toast.classList.add('show');
@@ -460,7 +585,7 @@
     showToast(finalMessage,finalTimeout);
   }
   function clearStore(name){return new Promise((resolve,reject)=>{const tx=state.db.transaction(name,'readwrite');tx.objectStore(name).clear();tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||new Error('Library clear failed'));});}
-  async function clearLibraryData(){revokeUrls(true);for(const id of [...state.thumbUrls.keys()])dropThumbUrl(id);state.thumbs.clear();state.thumbQueue=[];state.thumbQueued.clear();state.thumbFailed.clear();await Promise.all(['media','collections','settings','thumbs'].map(clearStore));state.legacy=[];indexLegacy();state.artistAvatars={};state.avatarLookups.clear();state.filter={type:'home'};state.kind='image';state.query='';$('#search').value='';$('#page-title').textContent='Browse library';}
+  async function clearLibraryData(){revokeUrls(true);for(const id of [...state.thumbUrls.keys()])dropThumbUrl(id);state.thumbs.clear();state.thumbQueue=[];state.thumbQueued.clear();state.thumbFailed.clear();await Promise.all(['media','collections','settings','thumbs'].map(clearStore));state.legacy=[];indexLegacy();state.artistAvatars={};state.avatarLookups.clear();state.pc={link:null,catalog:null,edits:{},status:'off',message:'',name:''};renderPcStatus();state.filter={type:'home'};state.kind='image';state.query='';$('#search').value='';$('#page-title').textContent='Browse library';}
   async function importFullLibrary(file){
     const toast=$('#toast');toast.textContent='Reading library archive…';toast.classList.add('show');let finalMessage='',finalTimeout=6000;
     try{
@@ -492,7 +617,7 @@
     openDB().then(async db=>{
       state.db=db;const legacy=await request('settings','get','legacyCatalog');const avatars=await request('settings','get','artistAvatars');const welcome=await request('settings','get','welcomeSeen');state.legacy=legacy?.value||[];indexLegacy();state.artistAvatars=avatars?.value||{};
       try{for(const record of await request('thumbs','getAll'))state.thumbs.set(record.id,record);}catch{}
-      await refreshData();startServiceWorker();
+      await pcLoadSaved();await refreshData();startServiceWorker();await pcInit();
       if(!welcome&&state.all.length===0){$('#library-dialog').showModal();await request('settings','put',{key:'welcomeSeen',value:true});}
     }).catch(e=>{showToast(`MediaLib could not open local browser storage: ${e.message}`,8000);});
     $('#import-button').addEventListener('click',()=>$('#files-input').click());
@@ -524,6 +649,10 @@
     $('#import-library').addEventListener('click',()=>{$('#manage-dialog').close();$('#library-archive-input').click();});
     $('#library-archive-input').addEventListener('change',e=>{if(e.target.files[0])importFullLibrary(e.target.files[0]);e.target.value='';});
     $('#delete-library').addEventListener('click',deleteLibrary);
+    $('#pc-connect').addEventListener('click',openPcDialog);
+    $('#pc-refresh').addEventListener('click',()=>pcRefresh(false));
+    $('#pc-disconnect').addEventListener('click',()=>{$('#manage-dialog').close();pcDisconnect();});
+    $('#pc-form').addEventListener('submit',async e=>{if(e.submitter?.value==='cancel')return;e.preventDefault();const key=$('#pc-key').value.trim()||state.pc.link?.key||'';if(await pcSaveLink($('#pc-url').value,key))$('#pc-dialog').close();});
     $('#mobile-nav-toggle').addEventListener('click',()=>{const sidebar=$('.sidebar'),open=!sidebar.classList.contains('open');sidebar.classList.toggle('open',open);$('#mobile-nav-toggle').setAttribute('aria-expanded',String(open));});
     $('#gallery-wrap').addEventListener('click',e=>{if(e.target===e.currentTarget&&matchMedia('(max-width:560px)').matches){$('.sidebar').classList.remove('open');$('#mobile-nav-toggle').setAttribute('aria-expanded','false');}});
     document.addEventListener('click',e=>{if(matchMedia('(max-width:560px)').matches&&$('.sidebar').classList.contains('open')&&!e.target.closest('.sidebar')&&!e.target.closest('#mobile-nav-toggle')){$('.sidebar').classList.remove('open');$('#mobile-nav-toggle').setAttribute('aria-expanded','false');}});

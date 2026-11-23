@@ -33,3 +33,15 @@
 .media-card{content-visibility:auto;contain-intrinsic-size:auto 220px}
 .detail-nav{position:absolute;top:50%;z-index:2;transform:translateY(-50%);width:38px;height:54px;border:0;border-radius:9px;background:#171a1d99;color:#fff;font-size:26px;line-height:1;touch-action:manipulation}.detail-nav:hover{background:#171a1ddd;color:var(--lime)}.detail-nav.prev{left:8px}.detail-nav.next{right:8px}
 @media(max-width:560px){.detail-nav{width:34px;height:46px;font-size:22px}}
+
+/* Your PC (AryGrabber phone access) */
+.pc-section{margin:14px 0 10px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08);text-align:left}
+.pc-status{font-size:13px;line-height:1.45;margin:6px 0 10px;color:#aeb4bb}
+.pc-status[data-state="ok"]{color:#8fd6a5}
+.pc-status[data-state="offline"],.pc-status[data-state="auth"]{color:#f2c94c}
+#pc-form input{width:100%;margin-bottom:10px}
+.detail-preview{position:relative}
+.detail-preview img.remote-placeholder{filter:blur(2px) brightness(.7)}
+.detail-loading{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);max-width:80%;padding:10px 14px;border-radius:10px;background:rgba(0,0,0,.65);color:#fff;font-size:14px;text-align:center}
+.detail-loading.error{color:#ffd27a}
+.open-original[aria-disabled="true"]{opacity:.5}

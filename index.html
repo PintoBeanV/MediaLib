@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="MediaLib">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' blob: data: https://aryion.com https://*.aryion.com; media-src blob:; script-src 'self'; style-src 'self'; connect-src 'self' https://aryion.com https://*.aryion.com; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' blob: data: https://aryion.com https://*.aryion.com; media-src blob:; script-src 'self'; style-src 'self'; connect-src 'self' https://aryion.com https://*.aryion.com https://*.ts.net; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon.svg">
@@ -38,7 +38,7 @@
           <button class="nav-row" data-filter="all-media"><span class="nav-icon">◧</span><span>All media</span><span class="nav-count" id="media-count">0</span></button>
         </section>
       </div>
-      <div class="sidebar-foot"><span class="privacy-dot"></span><span>Private on this device</span></div>
+      <div class="sidebar-foot"><span class="privacy-dot"></span><span id="privacy-label">Private on this device</span></div>
     </aside>
 
     <main class="main-area">
@@ -61,7 +61,8 @@
   <dialog id="detail-dialog" class="detail-dialog"><div id="detail-content"></div></dialog>
   <dialog id="folder-dialog" class="small-dialog"><form method="dialog" id="folder-form"><div class="dialog-mark">＋</div><h2>New virtual folder</h2><p>Collect items here without moving your original files.</p><input id="folder-name" maxlength="60" placeholder="Give it a name" required><div class="dialog-actions"><button class="button secondary" value="cancel">Cancel</button><button class="button primary" id="create-folder" value="default">Create folder</button></div></form></dialog>
   <dialog id="library-dialog" class="small-dialog"><form method="dialog"><div class="dialog-mark">▧</div><h2>Bring in your old catalog</h2><p>If you used the earlier MediaLib desktop version, import its private JSON export here. Then add the matching media folder and its notes, tags, and artist details will follow the files.</p><button class="button primary full" id="choose-legacy" value="default">Choose catalog export</button><button class="text-button full" value="cancel">Skip for now</button></form></dialog>
-  <dialog id="manage-dialog" class="small-dialog"><div class="dialog-mark">▤</div><h2>Manage this library</h2><p>A full library archive includes the media copies and private catalog. Keep that file private. Update indexed files with <b>Import folder</b>.</p><button class="button primary full" id="export-library">Export full library</button><button class="button secondary full" id="import-library">Import full library</button><button class="button danger full" id="delete-library">Delete this library</button><button class="text-button full" id="close-manage">Done</button></dialog>
+  <dialog id="manage-dialog" class="small-dialog"><div class="dialog-mark">▤</div><h2>Manage this library</h2><p>A full library archive includes the media copies and private catalog. Keep that file private. Update indexed files with <b>Import folder</b>.</p><button class="button primary full" id="export-library">Export full library</button><button class="button secondary full" id="import-library">Import full library</button><div class="pc-section"><div class="section-heading">YOUR PC</div><p class="pc-status" id="pc-status" data-state="off"></p><button class="button primary full" id="pc-connect">Connect to my PC</button><button class="button secondary full" id="pc-refresh" hidden>Check PC now</button><button class="text-button full" id="pc-disconnect" hidden>Disconnect from PC</button></div><button class="button danger full" id="delete-library">Delete this library</button><button class="text-button full" id="close-manage">Done</button></dialog>
+  <dialog id="pc-dialog" class="small-dialog"><form method="dialog" id="pc-form"><div class="dialog-mark">▣</div><h2>Connect to my PC</h2><p>In AryGrabber on your PC, open <b>Phone access</b> and press <b>Start sharing</b>. Scanning its QR code fills this in for you; otherwise copy the address and key from there. This phone must have Tailscale on, signed in to the same account.</p><label class="field-label" for="pc-url">PC address</label><input id="pc-url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://your-pc.tailXXXX.ts.net"><label class="field-label" for="pc-key">Access key</label><input id="pc-key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"><div class="dialog-actions"><button class="button secondary" value="cancel">Cancel</button><button class="button primary" value="default">Connect</button></div></form></dialog>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script src="archive.js" defer></script>
   <script src="app.js" defer></script>
